@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>真实农场</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- 顶部状态栏 -->
+    <header id="status-bar">
+      <div class="brand">🌾 真实农场</div>
+      <div class="stat">
+        <span class="stat-icon">💰</span>
+        <span id="gold" class="value">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-icon">⭐</span>
+        <span id="level" class="value">Lv.1</span>
+      </div>
+      <div id="exp-wrap">
+        <div id="exp-bar"></div>
+        <span id="exp-text" class="exp-text"></span>
+      </div>
+      <div class="stat">
+        <span id="weather-icon" class="stat-icon">☀️</span>
+        <span id="weather" class="value">晴天</span>
+      </div>
+      <div class="stat">
+        <span class="stat-icon">🍃</span>
+        <span id="season" class="value">夏</span>
+      </div>
+      <div class="stat">
+        <span class="stat-icon">✋</span>
+        <span id="holding" class="value">小麦种子</span>
+      </div>
+    </header>
+
+    <!-- 农场场景（Three.js 3D） -->
+    <main id="scene">
+      <div id="farm-container"></div>
+      <div id="hint" class="hint"></div>
+      <div id="view-hint" class="view-hint">🖱️ 拖拽旋转　滚轮缩放</div>
+    </main>
+
+    <!-- 底部工具栏 -->
+    <footer id="toolbar">
+      <div id="toolbar-tabs">
+        <button id="tab-shop" class="tab active" data-panel="shop">🛒 商店</button>
+        <button id="tab-market" class="tab" data-panel="market">📈 市场</button>
+        <button id="tab-tools" class="tab" data-panel="tools">🧰 工具</button>
+        <button id="tab-decor" class="tab" data-panel="decor">🎪 装饰</button>
+        <button id="tab-settings" class="tab" data-panel="settings">⚙️ 设置</button>
+      </div>
+      <div id="shop-panel" class="panel">
+        <div id="seed-list" class="seed-list"></div>
+      </div>
+      <div id="market-panel" class="panel hidden">
+        <div id="market-list" class="market-list"></div>
+      </div>
+      <div id="tools-panel" class="panel hidden">
+        <div id="tools-list" class="tools-list"></div>
+        <div class="panel-note">💧 浇水：生长 ×1.5（60 秒）　🧪 施肥：肥力 +30　⚠️ 收获会消耗肥力 15</div>
+      </div>
+      <div id="decor-panel" class="panel hidden">
+        <div id="decor-list" class="decor-list"></div>
+      </div>
+      <div id="settings-panel" class="panel hidden">
+        <div class="settings-list">
+          <button id="btn-export" class="set-btn">💾 导出存档</button>
+          <button id="btn-import" class="set-btn">📥 导入存档</button>
+          <button id="btn-reset" class="set-btn danger">🗑️ 重置游戏</button>
+          <input type="file" id="import-file" accept=".json,application/json" hidden />
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
