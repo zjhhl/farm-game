@@ -3,6 +3,13 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { Sky } from 'three/addons/objects/Sky.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { CROPS } from './crops.js';
 import { MAX_PLOTS } from './state.js';
 import { getSeason } from './growth.js';
@@ -15,14 +22,28 @@ const THEMES = {
   winter: { sky: '#9fb8cc', grass: '#d8e0e4', grassDark: '#b8c4c8', mount: '#9ab0b8', tree: '#7a8a92' },
 };
 
-// ---------- 天气天空色 ----------
-const WEATHER_SKY = {
-  sunny: null, // 用季节色
-  cloudy: '#9ab0c0',
-  rainy: '#6a7a88',
-  drought: '#d8b070',
-  frost: '#b8c8d4',
+// ---------- 真实模型素材（可选） ----------
+// 若 assets/models/ 下存在对应 .glb 文件，则用真实模型替换程序化几何体；否则回退到程序化
+const MODEL_SPECS = {
+  tree: { url: 'assets/models/tree.glb', scale: 1.0 },
+  scarecrow: { url: 'assets/models/scarecrow.glb', scale: 1.0 },
+  fence: { url: 'assets/models/fence.glb', scale: 1.0 },
+  windmill: { url: 'assets/models/windmill.glb', scale: 1.0 },
+  crop_wheat: { url: 'assets/models/crop_wheat.glb', scale: 0.6 },
+  crop_carrot: { url: 'assets/models/crop_carrot.glb', scale: 0.6 },
+  crop_corn: { url: 'assets/models/crop_corn.glb', scale: 0.6 },
+  crop_potato: { url: 'assets/models/crop_potato.glb', scale: 0.6 },
+  crop_tomato: { url: 'assets/models/crop_tomato.glb', scale: 0.6 },
 };
+
+const gltfLoader = new GLTFLoader();
+
+// 尝试加载模型，成功返回场景对象，失败返回 null
+function tryLoadModel(url) {
+  return new Promise((resolve) => {
+    gltfLoader.load(url, (gltf) => resolve(gltf.scene), undefined, () => resolve(null));
+  });
+}
 
 // 地块间距与坐标（3x3）
 const PLOT_SPACING = 3.8;
@@ -37,16 +58,17 @@ for (let i = 0; i < MAX_PLOTS; i++) {
 export function createFarm(container, state) {
   const scene = new THREE.Scene();
   const theme = THEMES[getSeason(Date.now())];
-  scene.background = new THREE.Color(theme.sky);
-  scene.fog = new THREE.Fog(theme.sky, 30, 90);
+  scene.fog = new THREE.Fog(theme.sky, 35, 130);
 
-  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500);
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 800);
   camera.position.set(0, 15, 26);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.1;
   container.appendChild(renderer.domElement);
 
   const controls = new OrbitControls(camera, renderer.domElement);
@@ -57,11 +79,13 @@ export function createFarm(container, state) {
   controls.minDistance = 10;
   controls.maxDistance = 55;
 
-  // 光照
-  const ambient = new THREE.AmbientLight(0xffffff, 0.45);
-  const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x5a6a3a, 0.7);
-  const sun = new THREE.DirectionalLight(0xfff2d0, 1.8);
-  sun.position.set(28, 38, 16);
+  // 统一太阳方向（天空、阳光、光晕一致）
+  const sunDir = new THREE.Vector3(0.45, 0.6, 0.35).normalize();
+
+  const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+  const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x5a6a3a, 0.6);
+  const sun = new THREE.DirectionalLight(0xfff2d0, 2.2);
+  sun.position.copy(sunDir).multiplyScalar(60);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.camera.left = -30;
@@ -69,12 +93,13 @@ export function createFarm(container, state) {
   sun.shadow.camera.top = 30;
   sun.shadow.camera.bottom = -30;
   sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 120;
+  sun.shadow.camera.far = 160;
   sun.shadow.bias = -0.0004;
   scene.add(ambient, hemi, sun);
 
-  const farm = { scene, camera, renderer, controls, sun, theme };
+  const farm = { scene, camera, renderer, controls, sun, theme, sunDir };
 
+  buildSky(farm, theme);
   buildGround(farm, theme);
   buildPlots(farm, state);
   buildTrees(farm, theme);
@@ -87,9 +112,65 @@ export function createFarm(container, state) {
   farm.lastWeather = null;
 
   handleResize(farm);
+  buildComposer(farm);
   window.addEventListener('resize', () => handleResize(farm));
 
   return farm;
+}
+
+// ---------- 程序化天空（大气散射） ----------
+function buildSky(farm, theme) {
+  const sky = new Sky();
+  sky.scale.setScalar(450000);
+  farm.scene.add(sky);
+
+  const u = sky.material.uniforms;
+  u['turbidity'].value = 8;
+  u['rayleigh'].value = 2.5;
+  u['mieCoefficient'].value = 0.005;
+  u['mieDirectionalG'].value = 0.8;
+  u['sunPosition'].value.copy(farm.sunDir);
+
+  farm.sky = sky;
+  farm.skyUniforms = u;
+}
+
+// 根据天气调整天空氛围
+function applyWeatherSky(farm, weather) {
+  const u = farm.skyUniforms;
+  if (!u) return;
+  const preset = {
+    sunny: { turbidity: 8, rayleigh: 2.5 },
+    cloudy: { turbidity: 14, rayleigh: 2.2 },
+    rainy: { turbidity: 20, rayleigh: 3.5 },
+    drought: { turbidity: 6, rayleigh: 1.6 },
+    frost: { turbidity: 10, rayleigh: 3.0 },
+  }[weather] || { turbidity: 8, rayleigh: 2.5 };
+  u['turbidity'].value = preset.turbidity;
+  u['rayleigh'].value = preset.rayleigh;
+}
+
+// ---------- 后期渲染（ACES 色调 + SSAO + Bloom） ----------
+function buildComposer(farm) {
+  const w = farm.renderer.domElement.width || 1000;
+  const h = farm.renderer.domElement.height || 600;
+
+  const composer = new EffectComposer(farm.renderer);
+  composer.addPass(new RenderPass(farm.scene, farm.camera));
+
+  const ssao = new SSAOPass(farm.scene, farm.camera, w, h);
+  ssao.kernelRadius = 16;
+  ssao.minDistance = 0.005;
+  ssao.maxDistance = 0.1;
+  composer.addPass(ssao);
+
+  const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.12, 0.5, 0.85);
+  composer.addPass(bloom);
+
+  composer.addPass(new OutputPass());
+
+  farm.composer = composer;
+  farm.ssaoPass = ssao;
 }
 
 // ---------- 地面 ----------
@@ -112,12 +193,37 @@ function makeGrassTexture(colorA, colorB) {
   c.width = 256;
   c.height = 256;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = colorA;
+
+  const base = ctx.createLinearGradient(0, 0, 256, 256);
+  base.addColorStop(0, colorA);
+  base.addColorStop(1, colorB);
+  ctx.fillStyle = base;
   ctx.fillRect(0, 0, 256, 256);
-  for (let i = 0; i < 5000; i++) {
-    ctx.fillStyle = Math.random() > 0.5 ? colorA : colorB;
-    ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+
+  // 细微色斑（模拟草地不均匀）
+  for (let i = 0; i < 1200; i++) {
+    const x = Math.random() * 256;
+    const y = Math.random() * 256;
+    ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.08})`;
+    ctx.beginPath();
+    ctx.arc(x, y, 1 + Math.random() * 3, 0, Math.PI * 2);
+    ctx.fill();
   }
+
+  // 草叶短线
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 600; i++) {
+    const x = Math.random() * 256;
+    const y = Math.random() * 256;
+    ctx.strokeStyle = Math.random() > 0.5
+      ? `rgba(255,255,255,${Math.random() * 0.15})`
+      : `rgba(0,0,0,${Math.random() * 0.12})`;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + (Math.random() - 0.5) * 4, y - 2 - Math.random() * 4);
+    ctx.stroke();
+  }
+
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(14, 14);
@@ -156,9 +262,51 @@ function buildPlots(farm, state) {
 function makeSoilMaterial(fertility) {
   const f = fertility / 100;
   const color = new THREE.Color('#8a5a30').lerp(new THREE.Color('#a8875a'), 1 - f);
-  const mat = new THREE.MeshStandardMaterial({ color, roughness: 1 });
+  const mat = new THREE.MeshStandardMaterial({
+    color,
+    roughness: 1,
+    map: makeSoilTexture(),
+  });
   mat.userData.fertility = fertility;
   return mat;
+}
+
+// 程序化土壤纹理：颗粒 + 裂缝
+function makeSoilTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#6f4526';
+  ctx.fillRect(0, 0, 256, 256);
+
+  for (let i = 0; i < 4000; i++) {
+    const x = Math.random() * 256;
+    const y = Math.random() * 256;
+    const v = 40 + Math.random() * 60;
+    ctx.fillStyle = `rgba(${v},${v * 0.55},${v * 0.3},${Math.random() * 0.35})`;
+    ctx.fillRect(x, y, 2, 2);
+  }
+
+  ctx.strokeStyle = 'rgba(30, 20, 10, 0.25)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 14; i++) {
+    let x = Math.random() * 256;
+    let y = Math.random() * 256;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    for (let s = 0; s < 5; s++) {
+      x += (Math.random() - 0.5) * 30;
+      y += (Math.random() - 0.5) * 30;
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 // 开垦地块：替换为土色材质
@@ -175,6 +323,24 @@ export function addCrop(farm, plotIndex, crop) {
   group.position.set(pos.x, 0.35, pos.z);
   farm.scene.add(group);
   farm.cropGroups.set(plotIndex, group);
+
+  // 尝试用真实模型替换作物（缺模型则保持程序化）
+  const spec = MODEL_SPECS['crop_' + crop.id];
+  if (spec) {
+    tryLoadModel(spec.url).then((model) => {
+      if (!model || farm.cropGroups.get(plotIndex) !== group) return;
+      while (group.children.length) group.remove(group.children[0]);
+      group.userData.fruit = null;
+      model.scale.setScalar(spec.scale);
+      model.traverse((o) => {
+        if (o.isMesh) {
+          o.castShadow = true;
+          o.receiveShadow = true;
+        }
+      });
+      group.add(model);
+    });
+  }
 }
 
 export function removeCrop(farm, plotIndex) {
@@ -225,8 +391,6 @@ function buildCropGroup(crop) {
 
 // ---------- 树 ----------
 function buildTrees(farm, theme) {
-  const treeMat = new THREE.MeshStandardMaterial({ color: theme.tree, roughness: 0.9 });
-  const trunkMat = new THREE.MeshStandardMaterial({ color: '#6a4a2a', roughness: 1 });
   const positions = [
     [-13, -13],
     [13, -13],
@@ -235,26 +399,56 @@ function buildTrees(farm, theme) {
     [-16, 2],
     [16, -2],
   ];
+  const treeMat = new THREE.MeshStandardMaterial({ color: theme.tree, roughness: 0.9 });
+  const trunkMat = new THREE.MeshStandardMaterial({ color: '#6a4a2a', roughness: 1 });
+
+  // 程序化树（立即可见，作为后备）
+  const progGroup = new THREE.Group();
   for (const [x, z] of positions) {
-    const tree = new THREE.Group();
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.32, 3.2, 8), trunkMat);
-    trunk.position.y = 1.6;
-    trunk.castShadow = true;
-    tree.add(trunk);
-
-    const crown = new THREE.Mesh(new THREE.SphereGeometry(1.5, 12, 10), treeMat);
-    crown.position.y = 3.6;
-    crown.castShadow = true;
-    tree.add(crown);
-
-    const crown2 = new THREE.Mesh(new THREE.SphereGeometry(1.0, 12, 10), treeMat);
-    crown2.position.set(0.7, 3.0, 0.3);
-    crown2.castShadow = true;
-    tree.add(crown2);
-
-    tree.position.set(x, 0, z);
-    farm.scene.add(tree);
+    progGroup.add(makeProgrammaticTree(treeMat, trunkMat, x, z));
   }
+  farm.scene.add(progGroup);
+
+  // 尝试用真实模型替换
+  tryLoadModel(MODEL_SPECS.tree.url).then((model) => {
+    if (!model) return;
+    farm.scene.remove(progGroup);
+    const modelGroup = new THREE.Group();
+    for (const [x, z] of positions) {
+      const t = model.clone(true);
+      t.position.set(x, 0, z);
+      t.scale.setScalar(MODEL_SPECS.tree.scale);
+      t.traverse((o) => {
+        if (o.isMesh) {
+          o.castShadow = true;
+          o.receiveShadow = true;
+        }
+      });
+      modelGroup.add(t);
+    }
+    farm.scene.add(modelGroup);
+  });
+}
+
+function makeProgrammaticTree(treeMat, trunkMat, x, z) {
+  const tree = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.32, 3.2, 8), trunkMat);
+  trunk.position.y = 1.6;
+  trunk.castShadow = true;
+  tree.add(trunk);
+
+  const crown = new THREE.Mesh(new THREE.SphereGeometry(1.5, 12, 10), treeMat);
+  crown.position.y = 3.6;
+  crown.castShadow = true;
+  tree.add(crown);
+
+  const crown2 = new THREE.Mesh(new THREE.SphereGeometry(1.0, 12, 10), treeMat);
+  crown2.position.set(0.7, 3.0, 0.3);
+  crown2.castShadow = true;
+  tree.add(crown2);
+
+  tree.position.set(x, 0, z);
+  return tree;
 }
 
 // ---------- 远山 ----------
@@ -286,8 +480,8 @@ function buildSunGlow(farm) {
   ctx.fillRect(0, 0, 128, 128);
   const tex = new THREE.CanvasTexture(c);
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
-  sprite.position.set(40, 40, 24);
-  sprite.scale.set(12, 12, 1);
+  sprite.position.copy(farm.sunDir).multiplyScalar(380);
+  sprite.scale.set(16, 16, 1);
   farm.scene.add(sprite);
   farm.sunGlow = sprite;
 }
@@ -304,6 +498,27 @@ function buildDecorations(farm) {
     farm.scene.add(farm.decorations[key]);
   }
   farm.windmillBlades = farm.decorations.windmill.userData.blades;
+
+  // 尝试用真实模型替换装饰
+  for (const key of ['fence', 'scarecrow', 'windmill']) {
+    tryLoadModel(MODEL_SPECS[key].url).then((model) => {
+      if (!model) return;
+      const old = farm.decorations[key];
+      const wasVisible = old.visible;
+      farm.scene.remove(old);
+      model.visible = wasVisible;
+      model.scale.setScalar(MODEL_SPECS[key].scale);
+      model.traverse((o) => {
+        if (o.isMesh) {
+          o.castShadow = true;
+          o.receiveShadow = true;
+        }
+      });
+      farm.scene.add(model);
+      farm.decorations[key] = model;
+      if (key === 'windmill') farm.windmillBlades = null;
+    });
+  }
 }
 
 function buildFence() {
@@ -463,11 +678,13 @@ export function tick(farm, state, now) {
       if (group) {
         group.scale.setScalar(0.25 + 0.75 * g);
         const fruit = group.userData.fruit;
-        if (g > 0.7) {
-          fruit.visible = true;
-          fruit.scale.setScalar((g - 0.7) / 0.3);
-        } else {
-          fruit.visible = false;
+        if (fruit) {
+          if (g > 0.7) {
+            fruit.visible = true;
+            fruit.scale.setScalar((g - 0.7) / 0.3);
+          } else {
+            fruit.visible = false;
+          }
         }
       }
       if (mat) mat.emissive.set(g >= 1 ? '#443300' : '#000000');
@@ -480,9 +697,7 @@ export function tick(farm, state, now) {
   const weather = state.weather.type;
   if (weather !== farm.lastWeather) {
     farm.lastWeather = weather;
-    const skyColor = weather === 'sunny' ? farm.theme.sky : WEATHER_SKY[weather];
-    farm.scene.background.set(skyColor);
-    farm.scene.fog.color.set(skyColor);
+    applyWeatherSky(farm, weather);
     farm.rain.visible = weather === 'rainy';
     farm.snow.visible = weather === 'frost';
   }
@@ -497,7 +712,8 @@ export function tick(farm, state, now) {
   }
 
   farm.controls.update();
-  farm.renderer.render(farm.scene, farm.camera);
+  if (farm.composer) farm.composer.render();
+  else farm.renderer.render(farm.scene, farm.camera);
 }
 
 // ---------- 射线检测 ----------
@@ -522,4 +738,5 @@ export function handleResize(farm) {
   farm.camera.aspect = w / h;
   farm.camera.updateProjectionMatrix();
   farm.renderer.setSize(w, h);
+  if (farm.composer) farm.composer.setSize(w, h);
 }
